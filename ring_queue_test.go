@@ -10,7 +10,7 @@ import (
 func TestRingQueueBasic(t *testing.T) {
 	rq := NewRingQueue[int](3)
 
-	// 测试基本操作
+	// test basic operations
 	if !rq.IsEmpty() {
 		t.Error("Expected queue to be empty")
 	}
@@ -38,17 +38,17 @@ func TestRingQueueBasic(t *testing.T) {
 func TestRingQueueOverwrite(t *testing.T) {
 	rq := NewRingQueue[int](3)
 
-	// 填满队列
+	// fill the queue
 	rq.Push(1)
 	rq.Push(2)
 	rq.Push(3)
 
-	// 继续添加，应该覆盖最老的数据
+	// continue adding, should overwrite oldest data
 	rq.Push(4)
 	rq.Push(5)
 
 	data := rq.Bytes()
-	// 应该包含最新的3个元素：3, 4, 5
+	// should contain the latest 3 elements: 3, 4, 5
 	expected := []int{3, 4, 5}
 	if len(data) != len(expected) {
 		t.Errorf("Expected length %d, got %d", len(expected), len(data))
@@ -64,7 +64,7 @@ func TestRingQueueConcurrentPush(t *testing.T) {
 	rq := NewRingQueue[int](1000)
 	var wg sync.WaitGroup
 
-	// 启动多个 goroutine 并发写入
+	// start multiple goroutines for concurrent writing
 	numWriters := 10
 	itemsPerWriter := 100
 
@@ -80,7 +80,7 @@ func TestRingQueueConcurrentPush(t *testing.T) {
 
 	wg.Wait()
 
-	// 验证队列状态
+	// verify queue state
 	if rq.Len() != 1000 {
 		t.Errorf("Expected length 1000, got %d", rq.Len())
 	}
@@ -93,7 +93,7 @@ func TestRingQueueConcurrentReadWrite(t *testing.T) {
 	rq := NewRingQueue[int](100)
 	var wg sync.WaitGroup
 
-	// 写入者
+	// writer
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -103,14 +103,14 @@ func TestRingQueueConcurrentReadWrite(t *testing.T) {
 		}
 	}()
 
-	// 多个读取者
+	// multiple readers
 	for i := 0; i < 5; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 200; j++ {
 				data := rq.Bytes()
-				_ = data // 允许脏读，只要不崩溃就行
+				_ = data // allow dirty reads, as long as it doesn't crash
 				time.Sleep(time.Microsecond)
 			}
 		}()
@@ -122,12 +122,12 @@ func TestRingQueueConcurrentReadWrite(t *testing.T) {
 func TestRingQueueClear(t *testing.T) {
 	rq := NewRingQueue[int](5)
 
-	// 添加数据
+	// add data
 	for i := 1; i <= 5; i++ {
 		rq.Push(i)
 	}
 
-	// 清空
+	// clear
 	rq.Clear()
 
 	if !rq.IsEmpty() {
@@ -143,7 +143,7 @@ func TestRingQueueClear(t *testing.T) {
 	}
 }
 
-// 基准测试
+// benchmark tests
 func BenchmarkRingQueuePush(b *testing.B) {
 	rq := NewRingQueue[int](1000)
 	b.ResetTimer()
@@ -156,7 +156,7 @@ func BenchmarkRingQueuePush(b *testing.B) {
 func BenchmarkRingQueueBytes(b *testing.B) {
 	rq := NewRingQueue[int](1000)
 
-	// 预填充
+	// pre-fill
 	for i := 0; i < 1000; i++ {
 		rq.Push(i)
 	}
@@ -180,13 +180,13 @@ func BenchmarkRingQueueConcurrentPush(b *testing.B) {
 		}
 	})
 
-	_ = numCPU // 避免未使用变量警告
+	_ = numCPU // avoid unused variable warning
 }
 
 func BenchmarkRingQueueConcurrentRead(b *testing.B) {
 	rq := NewRingQueue[int](1000)
 
-	// 预填充
+	// pre-fill
 	for i := 0; i < 1000; i++ {
 		rq.Push(i)
 	}

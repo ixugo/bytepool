@@ -6,26 +6,26 @@ import (
 	"sync/atomic"
 )
 
-// BytePool 多档位内存池
+// BytePool is a multi-tier memory pool
 type BytePool struct {
 	pools          map[int]*Pool[*[]byte]
 	stats          map[int]*PoolStats
 	sizes          []int
 	sizesLen       int
-	discardedCount int64 // 丢弃的数量，超过 maxPoolSize 的
+	discardedCount int64 // count of discarded items that exceed maxPoolSize
 	maxPoolSize    int
-	recentLengths  *RingQueue[int] // 最近 256 个 get 操作的长度统计
-	totalGet       int64           // 总的有效 get 操作数量
-	totalPut       int64           // 总的有效 put 操作数量
+	recentLengths  *RingQueue[int] // statistics of recent 256 get operation lengths
+	totalGet       int64           // total number of valid get operations
+	totalPut       int64           // total number of valid put operations
 }
 
-// PoolStats 内存池统计信息
+// PoolStats represents memory pool statistics
 type PoolStats struct {
 	Get int64 `json:"get"`
 	Put int64 `json:"put"`
 }
 
-// SizePowerOfTwo 返回从7开始到21的2的幂次方序列
+// SizePowerOfTwo returns a sequence of powers of 2 from 7 to 21
 func SizePowerOfTwo() []int {
 	return []int{
 		128,     // 2^7
@@ -46,6 +46,7 @@ func SizePowerOfTwo() []int {
 	}
 }
 
+// SizeStream returns a sequence of sizes optimized for streaming
 func SizeStream() []int {
 	return []int{
 		1024,
@@ -58,8 +59,8 @@ func SizeStream() []int {
 	}
 }
 
-// NewPools 传入分层的数组
-// 超过数组的最大值，就不会放回内存池
+// NewPools creates a new BytePool with the given tier sizes
+// Items exceeding the maximum size will not be returned to the pool
 func NewPools(sizes []int) *BytePool {
 	l := len(sizes)
 	if l < 1 {
@@ -70,7 +71,7 @@ func NewPools(sizes []int) *BytePool {
 		stats:         make(map[int]*PoolStats),
 		sizes:         make([]int, l),
 		sizesLen:      l,
-		recentLengths: NewRingQueue[int](256), // 初始化环形队列，容量为 256
+		recentLengths: NewRingQueue[int](256), // initialize ring queue with capacity 256
 	}
 
 	copy(pool.sizes, sizes)
@@ -88,6 +89,7 @@ func NewPools(sizes []int) *BytePool {
 	return &pool
 }
 
+// Alloc allocates a buffer of the specified size (placeholder implementation)
 func (p *BytePool) Alloc(size int) *Buffer {
 	if size <= 0 || size > p.maxPoolSize {
 		return nil
@@ -101,7 +103,7 @@ func (p *BytePool) Alloc(size int) *Buffer {
 	return nil
 }
 
-// findBestSize 根据需要的长度找到最合适的档位
+// findBestSize finds the most suitable tier based on the required length
 func (p *BytePool) findBestSize(length int) int {
 	for _, size := range p.sizes {
 		if size >= length {
@@ -111,13 +113,13 @@ func (p *BytePool) findBestSize(length int) int {
 	return p.sizes[len(p.sizes)-1]
 }
 
-// Get 从池中获取指定长度的 []byte
+// Get retrieves a []byte of the specified length from the pool
 func (p *BytePool) Get(length int) []byte {
 	if length <= 0 {
 		return nil
 	}
 
-	// 记录请求的长度到环形队列
+	// record the requested length to the ring queue
 	p.recentLengths.Push(length)
 
 	if length > p.maxPoolSize {
@@ -127,7 +129,7 @@ func (p *BytePool) Get(length int) []byte {
 
 	size := p.findBestSize(length)
 	if pool, ok := p.pools[size]; ok {
-		// 只有真正从内存池获取时才统计
+		// only count when actually getting from the memory pool
 		atomic.AddInt64(&p.stats[size].Get, 1)
 		atomic.AddInt64(&p.totalGet, 1)
 
@@ -138,16 +140,18 @@ func (p *BytePool) Get(length int) []byte {
 	return make([]byte, length)
 }
 
+// GetBuffer retrieves a Buffer of the specified length from the pool
 func (p *BytePool) GetBuffer(length int) *Buffer {
 	buf := p.Get(length)
 	return NewBuffer(buf, p)
 }
 
+// ReleaseBuffer releases a Buffer back to the pool
 func (p *BytePool) ReleaseBuffer(buf *Buffer) {
 	buf.Release()
 }
 
-// Put 将 []byte 放回池中
+// Put returns a []byte to the pool
 func (p *BytePool) Put(buf []byte) {
 	if buf == nil || cap(buf) == 0 {
 		return
@@ -155,40 +159,40 @@ func (p *BytePool) Put(buf []byte) {
 
 	capacity := cap(buf)
 
-	// 超过最大池化大小，直接丢弃
+	// discard if exceeding maximum pool size
 	if capacity > p.maxPoolSize {
 		atomic.AddInt64(&p.discardedCount, 1)
 		return
 	}
 
 	if pool, ok := p.pools[capacity]; ok {
-		// 只有真正放回内存池时才统计
+		// only count when actually returning to the memory pool
 		atomic.AddInt64(&p.stats[capacity].Put, 1)
 		atomic.AddInt64(&p.totalPut, 1)
 
-		// 重置切片长度为容量，清零内容
+		// reset slice length to capacity and clear content
 		buf = buf[:capacity]
 		clear(buf)
 		pool.Put(&buf)
 	}
-	// 如果容量不匹配任何档位，直接丢弃让 GC 回收
+	// if capacity doesn't match any tier, discard and let GC collect
 }
 
-// GetAvailableSizes 获取所有可用的档位大小
+// GetAvailableSizes returns all available tier sizes
 func (p *BytePool) GetAvailableSizes() []int {
 	return slices.Clone(p.sizes)
 }
 
-// GetDiscardedCount 获取丢弃的数量统计
+// GetDiscardedCount returns the count of discarded items
 func (p *BytePool) GetDiscardedCount() int64 {
 	return atomic.LoadInt64(&p.discardedCount)
 }
 
-// GetPoolStats 获取池的统计信息（用于调试）
+// GetPoolStats returns pool statistics (for debugging)
 func (p *BytePool) GetPoolStats() map[string]interface{} {
 	stats := make(map[string]interface{})
 
-	// 各档位统计
+	// statistics for each tier
 	poolStats := make(map[int]map[string]int64)
 	for size, stat := range p.stats {
 		poolStats[size] = map[string]int64{
@@ -199,19 +203,20 @@ func (p *BytePool) GetPoolStats() map[string]interface{} {
 	stats["pools"] = poolStats
 	stats["discarded"] = atomic.LoadInt64(&p.discardedCount)
 
-	// 添加总统计
+	// add total statistics
 	totalGet := atomic.LoadInt64(&p.totalGet)
 	totalPut := atomic.LoadInt64(&p.totalPut)
 	stats["total_get"] = totalGet
 	stats["total_put"] = totalPut
 
-	// 添加最近 256 个 get 操作的长度统计
+	// add statistics of recent 256 get operation lengths
 	recentLengths := p.recentLengths.Bytes()
 	stats["recent_lengths"] = recentLengths
 
 	return stats
 }
 
+// Expvar publishes pool statistics to expvar with the given prefix
 func (p *BytePool) Expvar(prefix string) *BytePool {
 	expvar.Publish(prefix+"pool_stats", expvar.Func(func() any {
 		return p.GetPoolStats()

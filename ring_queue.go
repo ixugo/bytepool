@@ -4,15 +4,15 @@ import (
 	"sync/atomic"
 )
 
-// RingQueue 简化的无锁环形队列
-// 只使用递增的写位置，允许脏读
+// RingQueue is a simplified lock-free ring queue
+// Only uses incrementing write position, allows dirty reads
 type RingQueue[T any] struct {
 	data     []T
 	size     int64
-	writePos int64 // 递增的写入位置，永不回退
+	writePos int64 // incrementing write position, never rolls back
 }
 
-// NewRingQueue 创建一个新的环形队列
+// NewRingQueue creates a new ring queue with the specified size
 func NewRingQueue[T any](size int) *RingQueue[T] {
 	if size <= 0 {
 		panic("ring queue size must be positive")
@@ -24,39 +24,39 @@ func NewRingQueue[T any](size int) *RingQueue[T] {
 	}
 }
 
-// Push 向队列尾部添加元素
+// Push adds an element to the tail of the queue
 func (rq *RingQueue[T]) Push(item T) {
-	// 获取当前写入位置并递增
+	// get current write position and increment
 	pos := atomic.AddInt64(&rq.writePos, 1) - 1
 
-	// 写入数据到实际位置（取模）
+	// write data to actual position (modulo)
 	actualPos := pos % rq.size
 	rq.data[actualPos] = item
 }
 
-// Bytes 获取当前队列的所有数据（允许脏读）
+// Bytes returns all current data in the queue (allows dirty reads)
 func (rq *RingQueue[T]) Bytes() []T {
 	currentWritePos := atomic.LoadInt64(&rq.writePos)
 
-	// 如果还没有写入任何数据
+	// if no data has been written yet
 	if currentWritePos == 0 {
 		return nil
 	}
 
-	// 判断是否产生了循环
+	// check if wrapping has occurred
 	if currentWritePos <= rq.size {
-		// 没有循环，直接返回从头到当前写入位置的数据
+		// no wrapping, return data from start to current write position
 		result := make([]T, currentWritePos)
 		copy(result, rq.data[:currentWritePos])
 		return result
 	}
 
-	// 产生了循环，队列已满
-	// writePos 是下一个要写入的位置，也就是最老数据的位置（第一个值）
+	// wrapping has occurred, queue is full
+	// writePos is the next position to write, also the position of oldest data (first value)
 	result := make([]T, rq.size)
-	firstPos := currentWritePos % rq.size // 第一个值的位置
+	firstPos := currentWritePos % rq.size // position of first value
 
-	// 从第一个值开始，按顺序读取 size 个元素
+	// read size elements in order starting from first value
 	for i := int64(0); i < rq.size; i++ {
 		actualPos := (firstPos + i) % rq.size
 		result[i] = rq.data[actualPos]
@@ -65,7 +65,7 @@ func (rq *RingQueue[T]) Bytes() []T {
 	return result
 }
 
-// Len 返回当前元素数量
+// Len returns the current number of elements
 func (rq *RingQueue[T]) Len() int {
 	writePos := atomic.LoadInt64(&rq.writePos)
 	if writePos <= rq.size {
@@ -74,22 +74,22 @@ func (rq *RingQueue[T]) Len() int {
 	return int(rq.size)
 }
 
-// Cap 返回队列容量
+// Cap returns the queue capacity
 func (rq *RingQueue[T]) Cap() int {
 	return int(rq.size)
 }
 
-// IsFull 检查队列是否已满
+// IsFull checks if the queue is full
 func (rq *RingQueue[T]) IsFull() bool {
 	return atomic.LoadInt64(&rq.writePos) >= rq.size
 }
 
-// IsEmpty 检查队列是否为空
+// IsEmpty checks if the queue is empty
 func (rq *RingQueue[T]) IsEmpty() bool {
 	return atomic.LoadInt64(&rq.writePos) == 0
 }
 
-// Clear 清空队列
+// Clear empties the queue
 func (rq *RingQueue[T]) Clear() {
 	atomic.StoreInt64(&rq.writePos, 0)
 	clear(rq.data)
