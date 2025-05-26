@@ -90,7 +90,7 @@ func NewPools(sizes []int) *BytePool {
 }
 
 // Alloc allocates a buffer of the specified size (placeholder implementation)
-func (p *BytePool) Alloc(size int) *Buffer {
+func (p *BytePool) Alloc(size int) *BytePool {
 	if size <= 0 || size > p.maxPoolSize {
 		return nil
 	}
@@ -100,7 +100,7 @@ func (p *BytePool) Alloc(size int) *Buffer {
 			p.Put(buf)
 		}
 	}
-	return nil
+	return p
 }
 
 // findBestSize finds the most suitable tier based on the required length
