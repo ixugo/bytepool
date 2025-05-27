@@ -4,8 +4,11 @@ import (
 	"sync/atomic"
 )
 
-// RingQueue is a simplified lock-free ring queue
-// Only uses incrementing write position, allows dirty reads
+var _ RingQueuer = (*RingQueue[int])(nil)
+
+// RingQueue is a high-performance lock-free ring queue optimized for write-heavy workloads.
+// It trades data consistency for performance - readers may see partially inconsistent data
+// during concurrent writes, but this is acceptable for statistical/monitoring use cases.
 type RingQueue[T any] struct {
 	data     []T
 	size     int64
@@ -25,6 +28,7 @@ func NewRingQueue[T any](size int) *RingQueue[T] {
 }
 
 // Push adds an element to the tail of the queue
+// Note: Allows dirty reads for maximum performance
 func (rq *RingQueue[T]) Push(item T) {
 	// get current write position and increment
 	pos := atomic.AddInt64(&rq.writePos, 1) - 1

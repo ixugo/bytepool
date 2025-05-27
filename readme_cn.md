@@ -157,24 +157,60 @@ stats := pool.GetPoolStats()
 
 ### 创建函数
 
-#### `NewPools(sizes []int) *BytePool`
+#### `NewPools(sizes []int, opts ...Option) *BytePool`
 
-创建新的分层内存池。
+创建新的分层内存池，支持可选配置。
 
 **参数：**
 - `sizes`: 内存档位数组，必须为正数且有序
+- `opts`: 可选配置函数
 
 **返回：**
 - `*BytePool`: 内存池实例
 
 **示例：**
 ```go
-// 使用预定义的 2 的幂次方档位
+// 使用预定义的 2 的幂次方档位，默认使用无锁循环队列
 pool := bytepool.NewPools(bytepool.SizePowerOfTwo())
 
-// 自定义档位
-pool := bytepool.NewPools([]int{128, 512, 2048})
+// 自定义档位，使用有锁循环队列以获得强一致性
+pool := bytepool.NewPools([]int{128, 512, 2048},
+    bytepool.WithRingQueueType(bytepool.MutexRingQueue))
+
+// 使用自定义循环队列实现
+customQueue := bytepool.NewLockedRingQueue[int](512)
+pool := bytepool.NewPools([]int{128, 512, 2048},
+    bytepool.WithRingQueue(customQueue))
 ```
+
+#### 循环队列选项
+
+BytePool 支持两种类型的循环队列来跟踪最近的分配长度：
+
+**无锁循环队列（默认）**
+- 使用原子操作实现最大性能
+- 单线程场景下比有锁版本快约 2.3 倍
+- 并发场景下快约 1.6 倍
+- 在并发访问时可能有轻微的数据不一致（对统计来说可接受）
+
+**有锁循环队列**
+- 使用互斥锁保证强一致性
+- 提供额外的操作如 `Pop()` 和 `Peek()`
+- 适合需要严格数据一致性的场景
+- 由于额外的跟踪字段，内存开销稍高
+
+**性能对比：**
+
+| 操作 | 无锁版本 | 有锁版本 | 性能比率 |
+|------|----------|----------|----------|
+| 单线程 Push | 8.2 ns/op | 19.1 ns/op | 快 2.3 倍 |
+| 并发 Push | 63.9 ns/op | 102.0 ns/op | 快 1.6 倍 |
+| Bytes() | 1053 ns/op | 1666 ns/op | 快 1.6 倍 |
+| BytePool 集成 | 186.1 ns/op | 291.8 ns/op | 快 1.6 倍 |
+
+**使用场景：**
+- **无锁版本（默认）**：高性能场景、统计监控、写入密集型工作负载
+- **有锁版本**：强一致性要求、需要 Pop/Peek 操作、调试场景
 
 #### `SizePowerOfTwo() []int`
 
@@ -205,6 +241,53 @@ structPool := bytepool.NewPool(func() *MyStruct {
     return &MyStruct{Data: make([]byte, 1024)}
 })
 ```
+
+#### 循环队列创建函数
+
+#### `NewRingQueue[T any](size int) *RingQueue[T]`
+
+创建新的无锁循环队列。
+
+**参数：**
+- `size`: 队列容量，必须为正数
+
+**返回：**
+- `*RingQueue[T]`: 无锁循环队列实例
+
+#### `NewLockedRingQueue[T any](size int) *LockedRingQueue[T]`
+
+创建新的有锁循环队列。
+
+**参数：**
+- `size`: 队列容量，必须为正数
+
+**返回：**
+- `*LockedRingQueue[T]`: 有锁循环队列实例
+
+**示例：**
+```go
+// 创建高性能的无锁循环队列
+lockFreeQueue := bytepool.NewRingQueue[int](256)
+
+// 创建强一致性的有锁循环队列
+lockedQueue := bytepool.NewLockedRingQueue[string](128)
+```
+
+#### 配置选项
+
+#### `WithRingQueueType(queueType RingQueueType) Option`
+
+配置要使用的循环队列类型。
+
+**参数：**
+- `queueType`: `LockFreeRingQueue`（默认）或 `MutexRingQueue`
+
+#### `WithRingQueue(ringQueuer RingQueuer) Option`
+
+使用自定义的循环队列实现。
+
+**参数：**
+- `ringQueuer`: 实现了 `RingQueuer` 接口的自定义循环队列
 
 ### 内存分配方法
 
@@ -314,6 +397,66 @@ buf := pool.Get()
 
 // 放回池中
 pool.Put(buf)
+```
+
+### 循环队列方法
+
+`RingQueue[T]` 和 `LockedRingQueue[T]` 都实现了 `RingQueuer` 接口，提供以下方法：
+
+#### 通用方法（两种类型都有）
+
+#### `Push(item T)`
+向队列添加元素。如果队列已满，会覆盖最旧的元素。
+
+#### `Bytes() []T`
+按顺序返回队列中的所有当前数据（从最旧到最新）。
+
+#### `Len() int`
+返回队列中当前元素的数量。
+
+#### `Cap() int`
+返回队列容量。
+
+#### `IsFull() bool`
+检查队列是否已满。
+
+#### `IsEmpty() bool`
+检查队列是否为空。
+
+#### `Clear()`
+清空队列。
+
+#### 额外方法（仅 LockedRingQueue）
+
+#### `Pop() (T, bool)`
+移除并返回队列中最旧的元素。如果队列为空，返回零值和 false。
+
+#### `Peek() (T, bool)`
+返回最旧的元素但不移除它。如果队列为空，返回零值和 false。
+
+**示例：**
+```go
+// 无锁循环队列使用
+queue := bytepool.NewRingQueue[int](5)
+queue.Push(1)
+queue.Push(2)
+queue.Push(3)
+
+data := queue.Bytes() // [1, 2, 3]
+fmt.Printf("长度: %d, 容量: %d\n", queue.Len(), queue.Cap())
+
+// 有锁循环队列的额外操作
+lockedQueue := bytepool.NewLockedRingQueue[string](3)
+lockedQueue.Push("a")
+lockedQueue.Push("b")
+
+if item, ok := lockedQueue.Peek(); ok {
+    fmt.Printf("最旧元素: %s\n", item) // "a"
+}
+
+if item, ok := lockedQueue.Pop(); ok {
+    fmt.Printf("弹出: %s\n", item) // "a"
+}
 ```
 
 ## 🔧 高级用法

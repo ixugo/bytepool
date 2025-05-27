@@ -157,24 +157,60 @@ Generic version of `sync.Pool` that provides type-safe object pooling. If you cl
 
 ### Creation Functions
 
-#### `NewPools(sizes []int) *BytePool`
+#### `NewPools(sizes []int, opts ...Option) *BytePool`
 
-Create a new tiered memory pool.
+Create a new tiered memory pool with optional configurations.
 
 **Parameters:**
 - `sizes`: Memory tier array, must be positive and ordered
+- `opts`: Optional configuration functions
 
 **Returns:**
 - `*BytePool`: Memory pool instance
 
 **Example:**
 ```go
-// Use predefined power-of-2 tiers
+// Use predefined power-of-2 tiers with default lock-free ring queue
 pool := bytepool.NewPools(bytepool.SizePowerOfTwo())
 
-// Custom tiers
-pool := bytepool.NewPools([]int{128, 512, 2048})
+// Custom tiers with mutex-based ring queue for strong consistency
+pool := bytepool.NewPools([]int{128, 512, 2048},
+    bytepool.WithRingQueueType(bytepool.MutexRingQueue))
+
+// Use custom ring queue implementation
+customQueue := bytepool.NewLockedRingQueue[int](512)
+pool := bytepool.NewPools([]int{128, 512, 2048},
+    bytepool.WithRingQueue(customQueue))
 ```
+
+#### Ring Queue Options
+
+BytePool supports two types of ring queues for tracking recent allocation lengths:
+
+**Lock-Free Ring Queue (Default)**
+- Uses atomic operations for maximum performance
+- ~2.3x faster than mutex-based version in single-threaded scenarios
+- ~1.6x faster in concurrent scenarios
+- May have slight data inconsistency during concurrent access (acceptable for statistics)
+
+**Mutex Ring Queue**
+- Uses mutex locks for strong consistency guarantees
+- Provides additional operations like `Pop()` and `Peek()`
+- Better for scenarios requiring strict data consistency
+- Slightly higher memory overhead due to additional tracking fields
+
+**Performance Comparison:**
+
+| Operation | Lock-Free | Mutex-Based | Performance Ratio |
+|-----------|-----------|-------------|-------------------|
+| Single Push | 8.2 ns/op | 19.1 ns/op | 2.3x faster |
+| Concurrent Push | 63.9 ns/op | 102.0 ns/op | 1.6x faster |
+| Bytes() | 1053 ns/op | 1666 ns/op | 1.6x faster |
+| BytePool Integration | 186.1 ns/op | 291.8 ns/op | 1.6x faster |
+
+**When to use each:**
+- **Lock-Free (Default)**: High-performance scenarios, statistical monitoring, write-heavy workloads
+- **Mutex-Based**: Strong consistency requirements, need Pop/Peek operations, debugging scenarios
 
 #### `SizePowerOfTwo() []int`
 
@@ -205,6 +241,53 @@ structPool := bytepool.NewPool(func() *MyStruct {
     return &MyStruct{Data: make([]byte, 1024)}
 })
 ```
+
+#### Ring Queue Creation Functions
+
+#### `NewRingQueue[T any](size int) *RingQueue[T]`
+
+Create a new lock-free ring queue.
+
+**Parameters:**
+- `size`: Queue capacity, must be positive
+
+**Returns:**
+- `*RingQueue[T]`: Lock-free ring queue instance
+
+#### `NewLockedRingQueue[T any](size int) *LockedRingQueue[T]`
+
+Create a new mutex-based ring queue.
+
+**Parameters:**
+- `size`: Queue capacity, must be positive
+
+**Returns:**
+- `*LockedRingQueue[T]`: Mutex-based ring queue instance
+
+**Example:**
+```go
+// Create lock-free ring queue for high performance
+lockFreeQueue := bytepool.NewRingQueue[int](256)
+
+// Create mutex-based ring queue for strong consistency
+lockedQueue := bytepool.NewLockedRingQueue[string](128)
+```
+
+#### Configuration Options
+
+#### `WithRingQueueType(queueType RingQueueType) Option`
+
+Configure the type of ring queue to use.
+
+**Parameters:**
+- `queueType`: Either `LockFreeRingQueue` (default) or `MutexRingQueue`
+
+#### `WithRingQueue(ringQueuer RingQueuer) Option`
+
+Use a custom ring queue implementation.
+
+**Parameters:**
+- `ringQueuer`: Custom ring queue that implements the `RingQueuer` interface
 
 ### Memory Allocation Methods
 
@@ -314,6 +397,66 @@ buf := pool.Get()
 
 // Put back to pool
 pool.Put(buf)
+```
+
+### Ring Queue Methods
+
+Both `RingQueue[T]` and `LockedRingQueue[T]` implement the `RingQueuer` interface and provide the following methods:
+
+#### Common Methods (Both Types)
+
+#### `Push(item T)`
+Add an element to the queue. If the queue is full, overwrites the oldest element.
+
+#### `Bytes() []T`
+Returns all current data in the queue in order (oldest to newest).
+
+#### `Len() int`
+Returns the current number of elements in the queue.
+
+#### `Cap() int`
+Returns the queue capacity.
+
+#### `IsFull() bool`
+Checks if the queue is full.
+
+#### `IsEmpty() bool`
+Checks if the queue is empty.
+
+#### `Clear()`
+Empties the queue.
+
+#### Additional Methods (LockedRingQueue Only)
+
+#### `Pop() (T, bool)`
+Removes and returns the oldest element from the queue. Returns zero value and false if queue is empty.
+
+#### `Peek() (T, bool)`
+Returns the oldest element without removing it. Returns zero value and false if queue is empty.
+
+**Example:**
+```go
+// Lock-free ring queue usage
+queue := bytepool.NewRingQueue[int](5)
+queue.Push(1)
+queue.Push(2)
+queue.Push(3)
+
+data := queue.Bytes() // [1, 2, 3]
+fmt.Printf("Length: %d, Capacity: %d\n", queue.Len(), queue.Cap())
+
+// Mutex-based ring queue with additional operations
+lockedQueue := bytepool.NewLockedRingQueue[string](3)
+lockedQueue.Push("a")
+lockedQueue.Push("b")
+
+if item, ok := lockedQueue.Peek(); ok {
+    fmt.Printf("Oldest item: %s\n", item) // "a"
+}
+
+if item, ok := lockedQueue.Pop(); ok {
+    fmt.Printf("Popped: %s\n", item) // "a"
+}
 ```
 
 ## 🔧 Advanced Usage

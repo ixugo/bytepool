@@ -6,6 +6,11 @@ import (
 	"sync/atomic"
 )
 
+type RingQueuer interface {
+	Push(item int)
+	Bytes() []int
+}
+
 // BytePool is a multi-tier memory pool
 type BytePool struct {
 	pools          map[int]*Pool[*[]byte]
@@ -14,9 +19,9 @@ type BytePool struct {
 	sizesLen       int
 	discardedCount int64 // count of discarded items that exceed maxPoolSize
 	maxPoolSize    int
-	recentLengths  *RingQueue[int] // statistics of recent 256 get operation lengths
-	totalGet       int64           // total number of valid get operations
-	totalPut       int64           // total number of valid put operations
+	recentLengths  RingQueuer // statistics of recent 256 get operation lengths
+	totalGet       int64      // total number of valid get operations
+	totalPut       int64      // total number of valid put operations
 }
 
 // PoolStats represents memory pool statistics
@@ -25,43 +30,41 @@ type PoolStats struct {
 	Put int64 `json:"put"`
 }
 
-// SizePowerOfTwo returns a sequence of powers of 2 from 7 to 21
-func SizePowerOfTwo() []int {
-	return []int{
-		128,     // 2^7
-		256,     // 2^8
-		512,     // 2^9
-		1024,    // 2^10
-		2048,    // 2^11
-		4096,    // 2^12
-		8192,    // 2^13
-		16384,   // 2^14
-		32768,   // 2^15
-		65536,   // 2^16
-		131072,  // 2^17
-		262144,  // 2^18
-		524288,  // 2^19
-		1048576, // 2^20
-		2097152, // 2^21
+type Option func(*BytePool)
+
+// RingQueueType represents the type of ring queue to use
+type RingQueueType int
+
+const (
+	// LockFreeRingQueue uses atomic operations for maximum performance (default)
+	LockFreeRingQueue RingQueueType = iota
+	// MutexRingQueue uses mutex locks for strong consistency
+	MutexRingQueue
+)
+
+func WithRingQueue(ringQueuer RingQueuer) Option {
+	return func(p *BytePool) {
+		p.recentLengths = ringQueuer
 	}
 }
 
-// SizeStream returns a sequence of sizes optimized for streaming
-func SizeStream() []int {
-	return []int{
-		1024,
-		4096,
-		16384,
-		32768,
-		65536,
-		131072,
-		262144,
+// WithRingQueueType sets the type of ring queue to use
+func WithRingQueueType(queueType RingQueueType) Option {
+	return func(p *BytePool) {
+		switch queueType {
+		case LockFreeRingQueue:
+			p.recentLengths = NewRingQueue[int](256)
+		case MutexRingQueue:
+			p.recentLengths = NewLockedRingQueue[int](256)
+		default:
+			p.recentLengths = NewRingQueue[int](256) // default to lock-free
+		}
 	}
 }
 
 // NewPools creates a new BytePool with the given tier sizes
 // Items exceeding the maximum size will not be returned to the pool
-func NewPools(sizes []int) *BytePool {
+func NewPools(sizes []int, opts ...Option) *BytePool {
 	l := len(sizes)
 	if l < 1 {
 		panic("sizes is empty")
@@ -72,6 +75,9 @@ func NewPools(sizes []int) *BytePool {
 		sizes:         make([]int, l),
 		sizesLen:      l,
 		recentLengths: NewRingQueue[int](256), // initialize ring queue with capacity 256
+	}
+	for _, opt := range opts {
+		opt(&pool)
 	}
 
 	copy(pool.sizes, sizes)
