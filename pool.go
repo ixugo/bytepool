@@ -178,7 +178,6 @@ func (p *BytePool) Put(buf []byte) {
 
 		// reset slice length to capacity and clear content
 		buf = buf[:capacity]
-		clear(buf)
 		pool.Put(&buf)
 	}
 	// if capacity doesn't match any tier, discard and let GC collect
